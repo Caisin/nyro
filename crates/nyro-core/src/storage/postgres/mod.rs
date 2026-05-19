@@ -747,6 +747,10 @@ struct PostgresApiKeyStore {
     pool: Pool<Postgres>,
 }
 
+fn postgres_create_api_key_sql() -> &'static str {
+    "INSERT INTO api_keys (id, key, name, rpm, rpd, tpm, tpd, is_enabled, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NULLIF($8, '')::timestamptz)"
+}
+
 #[async_trait]
 impl ApiKeyStore for PostgresApiKeyStore {
     async fn list(&self) -> anyhow::Result<Vec<ApiKeyWithBindings>> {
@@ -776,19 +780,17 @@ impl ApiKeyStore for PostgresApiKeyStore {
     async fn create(&self, input: CreateApiKey) -> anyhow::Result<ApiKeyWithBindings> {
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("sk-{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(
-            "INSERT INTO api_keys (id, key, name, rpm, rpd, tpm, tpd, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULLIF($8, '')::timestamptz)",
-        )
-        .bind(&id)
-        .bind(&key)
-        .bind(input.name.trim())
-        .bind(input.rpm)
-        .bind(input.rpd)
-        .bind(input.tpm)
-        .bind(input.tpd)
-        .bind(input.expires_at.as_deref().map(str::trim).unwrap_or(""))
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(postgres_create_api_key_sql())
+            .bind(&id)
+            .bind(&key)
+            .bind(input.name.trim())
+            .bind(input.rpm)
+            .bind(input.rpd)
+            .bind(input.tpm)
+            .bind(input.tpd)
+            .bind(input.expires_at.as_deref().map(str::trim).unwrap_or(""))
+            .execute(&self.pool)
+            .await?;
         replace_api_key_routes(&self.pool, &id, &input.route_ids).await?;
         self.get(&id).await?.context("api key missing after create")
     }
@@ -853,6 +855,24 @@ impl ApiKeyStore for PostgresApiKeyStore {
             .await?
         };
         Ok(row.is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn postgres_api_key_create_sql_uses_is_enabled_schema() {
+        let sql = postgres_create_api_key_sql();
+        assert!(
+            !sql.contains("status"),
+            "api_keys.status was migrated away; create must not write the legacy status column"
+        );
+        assert!(
+            sql.contains("is_enabled"),
+            "new API keys should be explicitly enabled through is_enabled"
+        );
     }
 }
 

@@ -145,6 +145,51 @@
     ]
   },
   {
+    "id": "vertex",
+    "label": {
+      "zh": "Vertex AI",
+      "en": "Vertex AI"
+    },
+    "icon": "google",
+    "defaultProtocol": "google-genai",
+    "channels": [
+      {
+        "id": "native",
+        "label": {
+          "zh": "原生 Gemini",
+          "en": "Native Gemini"
+        },
+        "baseUrls": {
+          "google-genai": "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1"
+        },
+        "staticModels": [
+          "gemini-2.5-pro",
+          "gemini-2.5-flash",
+          "gemini-2.0-flash-001",
+          "gemini-1.5-pro-002",
+          "gemini-1.5-flash-002"
+        ],
+        "authMode": "apikey"
+      },
+      {
+        "id": "openai",
+        "label": {
+          "zh": "OpenAI 兼容",
+          "en": "OpenAI Compatible"
+        },
+        "baseUrls": {
+          "openai-compat": "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1/endpoints/openapi"
+        },
+        "staticModels": [
+          "google/gemini-2.5-pro",
+          "google/gemini-2.5-flash",
+          "google/gemini-2.0-flash-001"
+        ],
+        "authMode": "apikey"
+      }
+    ]
+  },
+  {
     "id": "xai",
     "label": {
       "zh": "xAI",

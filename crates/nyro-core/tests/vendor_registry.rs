@@ -109,9 +109,7 @@ fn vertex_build_url_rewrites_google_generate_content_to_vertex_resource() {
     let reg = VendorRegistry::global();
     let mut p = make_provider(Some("vertex"), None);
     p.protocol = "google-genai".into();
-    p.base_url =
-        "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1"
-            .into();
+    p.base_url = "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global".into();
     p.api_key = r#"{"project_id":"demo-project"}"#.into();
     let ext = reg
         .resolve(&p, GOOGLE_GENERATE_CONTENT_V1BETA)
@@ -132,7 +130,7 @@ fn vertex_build_url_rewrites_google_generate_content_to_vertex_resource() {
 
     assert_eq!(
         url,
-        "https://us-central1-aiplatform.googleapis.com/v1/projects/demo-project/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+        "https://aiplatform.googleapis.com/v1/projects/demo-project/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"
     );
 }
 
@@ -141,7 +139,7 @@ fn vertex_build_url_rewrites_openai_compat_path_without_double_version() {
     let reg = VendorRegistry::global();
     let mut p = make_provider(Some("vertex"), None);
     p.protocol = "openai-compat".into();
-    p.base_url = "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1/endpoints/openapi".into();
+    p.base_url = "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/endpoints/openapi".into();
     p.api_key = r#"{"project_id":"demo-project"}"#.into();
     let ext = reg
         .resolve(&p, OPENAI_CHAT_COMPLETIONS_V1)
@@ -158,7 +156,7 @@ fn vertex_build_url_rewrites_openai_compat_path_without_double_version() {
 
     assert_eq!(
         url,
-        "https://us-central1-aiplatform.googleapis.com/v1/projects/demo-project/locations/us-central1/endpoints/openapi/chat/completions"
+        "https://aiplatform.googleapis.com/v1/projects/demo-project/locations/global/endpoints/openapi/chat/completions"
     );
 }
 

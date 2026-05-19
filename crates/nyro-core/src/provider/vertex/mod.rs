@@ -51,7 +51,7 @@ const METADATA: VendorMetadata = VendorMetadata {
             },
             base_urls: &[ProtocolBaseUrl {
                 protocol: "google-genai",
-                base_url: "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1",
+                base_url: "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global",
             }],
             api_key: None,
             models_source: None,
@@ -75,7 +75,7 @@ const METADATA: VendorMetadata = VendorMetadata {
             },
             base_urls: &[ProtocolBaseUrl {
                 protocol: "openai-compat",
-                base_url: "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1/endpoints/openapi",
+                base_url: "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/endpoints/openapi",
             }],
             api_key: None,
             models_source: None,
@@ -322,7 +322,7 @@ mod tests {
             name: "test".into(),
             vendor: Some("vertex".into()),
             protocol: "openai-compat".into(),
-            base_url: "https://us-central1-aiplatform.googleapis.com/v1/projects/demo/locations/us-central1/endpoints/openapi".into(),
+            base_url: "https://aiplatform.googleapis.com/v1/projects/demo/locations/global/endpoints/openapi".into(),
             preset_key: None,
             channel: None,
             models_source: None,

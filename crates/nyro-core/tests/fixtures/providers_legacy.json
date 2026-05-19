@@ -160,7 +160,7 @@
           "en": "Native Gemini"
         },
         "baseUrls": {
-          "google-genai": "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1"
+          "google-genai": "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global"
         },
         "staticModels": [
           "gemini-2.5-pro",
@@ -178,7 +178,7 @@
           "en": "OpenAI Compatible"
         },
         "baseUrls": {
-          "openai-compat": "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1/endpoints/openapi"
+          "openai-compat": "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/endpoints/openapi"
         },
         "staticModels": [
           "google/gemini-2.5-pro",

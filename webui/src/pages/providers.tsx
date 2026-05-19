@@ -205,50 +205,9 @@ function isVertexProviderSelection(value?: Pick<CreateProvider, "vendor" | "pres
   return vendor === "vertex" || preset === "vertex";
 }
 
-const DEFAULT_VERTEX_LOCATION = "us-central1";
-
-function normalizeVertexLocation(location: string) {
-  return location.trim().toLowerCase();
-}
-
-function defaultVertexBaseUrl(location: string, protocol: ProviderProtocol | string) {
-  const normalized = normalizeVertexLocation(location) || DEFAULT_VERTEX_LOCATION;
-  const base = `https://${normalized}-aiplatform.googleapis.com/v1/projects/{project}/locations/${normalized}`;
+function defaultVertexBaseUrl(protocol: ProviderProtocol | string) {
+  const base = "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global";
   return protocol === "openai-compat" ? `${base}/endpoints/openapi` : base;
-}
-
-function vertexLocationFromBaseUrl(baseUrl?: string | null) {
-  const raw = baseUrl?.trim() ?? "";
-  const pathMatch = raw.match(/\/locations\/([^/?#]+)/i);
-  if (pathMatch?.[1]) return decodeURIComponent(pathMatch[1]);
-
-  const hostMatch = raw.match(/^https:\/\/([a-z0-9-]+)-aiplatform\.googleapis\.com(?:[:/]|$)/i);
-  return hostMatch?.[1] ?? DEFAULT_VERTEX_LOCATION;
-}
-
-function applyVertexLocationToBaseUrl(
-  baseUrl: string | undefined,
-  location: string,
-  protocol: ProviderProtocol | string,
-) {
-  const normalized = normalizeVertexLocation(location);
-  if (!normalized) return baseUrl ?? "";
-
-  let next = baseUrl?.trim() || defaultVertexBaseUrl(normalized, protocol);
-  next = next.replace(
-    /^https:\/\/[a-z0-9-]+-aiplatform\.googleapis\.com/i,
-    `https://${normalized}-aiplatform.googleapis.com`,
-  );
-
-  if (/\/locations\/[^/?#]+/i.test(next)) {
-    return next.replace(/\/locations\/[^/?#]+/i, `/locations/${normalized}`);
-  }
-
-  if (/\/projects\/[^/?#]+/i.test(next)) {
-    return next.replace(/(\/projects\/[^/?#]+)/i, `$1/locations/${normalized}`);
-  }
-
-  return defaultVertexBaseUrl(normalized, protocol);
 }
 
 function joinStaticModels(models?: string[]) {
@@ -1164,11 +1123,7 @@ export default function ProvidersPage() {
     const nextBaseUrl = config.baseUrl || protocolUrl(nextProtocol);
     setForm((prev) => {
       const baseUrl = isVertexProviderSelection(prev)
-        ? applyVertexLocationToBaseUrl(
-            nextBaseUrl,
-            vertexLocationFromBaseUrl(prev.base_url),
-            nextProtocol,
-          )
+        ? (nextBaseUrl || defaultVertexBaseUrl(nextProtocol))
         : nextBaseUrl;
       return {
         ...prev,
@@ -1211,11 +1166,7 @@ export default function ProvidersPage() {
             const config = resolvePresetConfig(preset, nextProtocol, nextChannelId);
             const nextBaseUrl = config.baseUrl || protocolUrl(nextProtocol);
             const baseUrl = isVertexProviderSelection(prev)
-              ? applyVertexLocationToBaseUrl(
-                  nextBaseUrl,
-                  vertexLocationFromBaseUrl(prev.base_url),
-                  nextProtocol,
-                )
+              ? (nextBaseUrl || defaultVertexBaseUrl(nextProtocol))
               : nextBaseUrl;
             return {
               ...prev,
@@ -1254,9 +1205,6 @@ export default function ProvidersPage() {
   const hasCreatePresets = providerPresets.length > 0;
   const createResolvedAuthMode = presetChannelAuthMode(selectedPreset, createChannelValue);
   const createUsesVertexServiceAccount = isVertexProviderSelection(form);
-  const createVertexLocation = createUsesVertexServiceAccount
-    ? vertexLocationFromBaseUrl(form.base_url)
-    : DEFAULT_VERTEX_LOCATION;
   const createOAuthReady = createOAuthStatus?.status === "ready";
   const createOAuthRequiresManualCode =
     createOAuthStatus?.status === "pending"
@@ -1685,7 +1633,7 @@ export default function ProvidersPage() {
                         ? (config.baseUrl || form.base_url)
                         : config.baseUrl;
                     const baseUrl = createUsesVertexServiceAccount
-                      ? applyVertexLocationToBaseUrl(nextBaseUrl, createVertexLocation, nextProtocol)
+                      ? (nextBaseUrl || defaultVertexBaseUrl(nextProtocol))
                       : nextBaseUrl;
                     setForm({
                       ...form,
@@ -1708,35 +1656,6 @@ export default function ProvidersPage() {
                   </SelectContent>
                 </Select>
               </div>
-              )}
-              {createResolvedAuthMode !== "oauth" && (
-              createUsesVertexServiceAccount && (
-              <div className="space-y-2">
-                <FieldLabel
-                  info={
-                    isZh
-                      ? "Vertex 区域会同时更新域名和 /locations/...，例如 us-central1、europe-west4。"
-                      : "Vertex location updates both the hostname and /locations/... path, for example us-central1 or europe-west4."
-                  }
-                >
-                  {isZh ? "区域 Location" : "Location"}
-                </FieldLabel>
-                <Input
-                  placeholder="us-central1"
-                  value={createVertexLocation}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      base_url: applyVertexLocationToBaseUrl(
-                        form.base_url,
-                        e.target.value,
-                        form.protocol,
-                      ),
-                    })
-                  }
-                />
-              </div>
-              )
               )}
               {createResolvedAuthMode !== "oauth" && (
               <div className="space-y-2">
@@ -1865,9 +1784,6 @@ export default function ProvidersPage() {
               );
               const editingResolvedAuthMode = presetChannelAuthMode(editingPreset, editingChannelValue);
               const editUsesVertexServiceAccount = isVertexProviderSelection(editForm);
-              const editVertexLocation = editUsesVertexServiceAccount
-                ? vertexLocationFromBaseUrl(editForm.base_url)
-                : DEFAULT_VERTEX_LOCATION;
               const currentProviderIsOAuth =
                 normalizeAuthMode(p.auth_mode) === "oauth"
                 || normalizeAuthMode(editForm.auth_mode) === "oauth";
@@ -1964,7 +1880,7 @@ export default function ProvidersPage() {
                           );
                           const nextBaseUrl = config.baseUrl || protocolUrl(resolvedProtocol);
                           const baseUrl = editUsesVertexServiceAccount
-                            ? applyVertexLocationToBaseUrl(nextBaseUrl, editVertexLocation, resolvedProtocol)
+                            ? (nextBaseUrl || defaultVertexBaseUrl(resolvedProtocol))
                             : nextBaseUrl;
                           setEditError(null);
                           setEditForm({
@@ -2243,7 +2159,7 @@ export default function ProvidersPage() {
                               ? (config.baseUrl || editForm.base_url || "")
                               : config.baseUrl;
                           const baseUrl = editUsesVertexServiceAccount
-                            ? applyVertexLocationToBaseUrl(nextBaseUrl, editVertexLocation, nextProtocol)
+                            ? (nextBaseUrl || defaultVertexBaseUrl(nextProtocol))
                             : nextBaseUrl;
                           setEditForm({
                             ...editForm,
@@ -2266,35 +2182,6 @@ export default function ProvidersPage() {
                         </SelectContent>
                       </Select>
                     </div>
-                    ) : null}
-                    {editingResolvedAuthMode !== "oauth" ? (
-                    editUsesVertexServiceAccount ? (
-                    <div className="space-y-2">
-                      <FieldLabel
-                        info={
-                          isZh
-                            ? "Vertex 区域会同时更新域名和 /locations/...，例如 us-central1、europe-west4。"
-                            : "Vertex location updates both the hostname and /locations/... path, for example us-central1 or europe-west4."
-                        }
-                      >
-                        {isZh ? "区域 Location" : "Location"}
-                      </FieldLabel>
-                      <Input
-                        placeholder="us-central1"
-                        value={editVertexLocation}
-                        onChange={(e) =>
-                          setEditForm({
-                            ...editForm,
-                            base_url: applyVertexLocationToBaseUrl(
-                              editForm.base_url,
-                              e.target.value,
-                              editForm.protocol ?? "google-genai",
-                            ),
-                          })
-                        }
-                      />
-                    </div>
-                    ) : null
                     ) : null}
                     {editingResolvedAuthMode !== "oauth" ? (
                     <div className="space-y-2">

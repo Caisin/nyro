@@ -40,7 +40,7 @@ const METADATA: VendorMetadata = VendorMetadata {
         zh: "Vertex AI",
         en: "Vertex AI",
     },
-    icon: "google",
+    icon: "googlecloud",
     default_protocol: "google-genai",
     channels: &[
         ChannelDef {

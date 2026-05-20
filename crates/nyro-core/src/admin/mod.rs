@@ -20,7 +20,7 @@ use crate::protocol::ProviderProtocols;
 use crate::protocol::ids::OPENAI_CHAT_COMPLETIONS_V1;
 use crate::protocol::ids::OPENAI_EMBEDDINGS_V1;
 use crate::provider::metadata::CapabilitiesSource;
-use crate::provider::{VendorCtx, VendorRegistry};
+use crate::provider::{VendorCtx, VendorRegistry, vertexai};
 use crate::proxy::client::ProxyClient;
 use crate::router::TargetSelector;
 use crate::storage::traits::ProviderTestResult;
@@ -655,7 +655,7 @@ impl AdminService {
             .await;
         let start = Instant::now();
         let protocol = provider.protocol.trim();
-        let vertex_runtime = if crate::provider::vertex::is_vertex_vendor(&provider) {
+        let vertex_runtime = if vertexai::is_vertex_vendor(&provider) {
             Some(self.resolve_provider_runtime(&provider).await?)
         } else {
             None
@@ -1758,10 +1758,10 @@ impl AdminService {
             if api_key.is_empty() {
                 anyhow::bail!("provider api key is empty");
             }
-            if crate::provider::vertex::is_vertex_vendor(provider) {
-                let access_token = crate::provider::vertex::vertex_access_token(&api_key).await?;
+            if vertexai::is_vertex_vendor(provider) {
+                let access_token = vertexai::vertex_access_token(&api_key).await?;
                 let binding = RuntimeBinding {
-                    base_url_override: Some(crate::provider::vertex::expand_vertex_base_url(
+                    base_url_override: Some(vertexai::expand_vertex_base_url(
                         &provider.base_url,
                         &api_key,
                     )),

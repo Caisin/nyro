@@ -98,7 +98,7 @@ pub struct VertexVendor;
 impl Vendor for VertexVendor {
     fn scope(&self) -> VendorScope {
         VendorScope::Vendor {
-            vendor_id: "vertex",
+            vendor_id: "vertexai",
         }
     }
 

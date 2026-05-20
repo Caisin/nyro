@@ -390,7 +390,7 @@ export default function ProvidersPage() {
   const [testTarget, setTestTarget] = useState<Provider | null>(null);
   const [providerToDelete, setProviderToDelete] = useState<Provider | null>(null);
   const [providerToCopy, setProviderToCopy] = useState<Provider | null>(null);
-  const [copyRoutes, setCopyRoutes] = useState(false);
+  const [appendTargets, setAppendTargets] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState(DEFAULT_PRESET_ID);
   const [showCreateApiKey, setShowCreateApiKey] = useState(true);
   const [showEditApiKey, setShowEditApiKey] = useState(false);
@@ -557,8 +557,8 @@ export default function ProvidersPage() {
   });
 
   const copyMut = useMutation({
-    mutationFn: ({ id, copyRoutes }: { id: string; copyRoutes: boolean }) =>
-      backend<Provider>("copy_provider", { id, options: { copy_routes: copyRoutes } }),
+    mutationFn: ({ id, appendTargets }: { id: string; appendTargets: boolean }) =>
+      backend<Provider>("copy_provider", { id, options: { append_targets: appendTargets } }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["providers"] });
       qc.invalidateQueries({ queryKey: ["routes"] });
@@ -2406,7 +2406,7 @@ export default function ProvidersPage() {
                     </button>
                     <button
                       onClick={() => {
-                        setCopyRoutes(false);
+                        setAppendTargets(false);
                         setProviderToCopy(p);
                       }}
                       disabled={copyMut.isPending}
@@ -2532,34 +2532,34 @@ export default function ProvidersPage() {
         onOpenChange={(open) => {
           if (!open && !copyMut.isPending) {
             setProviderToCopy(null);
-            setCopyRoutes(false);
+            setAppendTargets(false);
           }
         }}
         title={isZh ? "确认复制提供商" : "Confirm provider copy"}
         description={
           providerToCopy
             ? (isZh
-              ? `确认复制「${providerToCopy.name}」吗？新提供商名称将为「${nextProviderCopyName(providers, providerToCopy.name)}」。复制出的 Provider 默认为关闭状态。`
-              : `Copy "${providerToCopy.name}"? The new provider name will be "${nextProviderCopyName(providers, providerToCopy.name)}". The copied provider will be disabled by default.`)
+              ? `复制「${providerToCopy.name}」为「${nextProviderCopyName(providers, providerToCopy.name)}」，新提供商默认禁用。`
+              : `Copy "${providerToCopy.name}" as "${nextProviderCopyName(providers, providerToCopy.name)}" (disabled by default).`)
             : undefined
         }
         content={
           <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
             <Checkbox
-              checked={copyRoutes}
-              onCheckedChange={(checked) => setCopyRoutes(checked === true)}
+              checked={appendTargets}
+              onCheckedChange={(checked) => setAppendTargets(checked === true)}
               disabled={copyMut.isPending}
-              aria-label={isZh ? "是否同步路由 Target" : "Copy route targets"}
+              aria-label={isZh ? "追加路由目标" : "Append route targets"}
               className="mt-0.5"
             />
             <span className="space-y-1">
               <span className="block font-medium text-slate-800">
-                {isZh ? "是否同步路由 Target" : "Copy route targets"}
+                {isZh ? "追加路由目标" : "Append route targets"}
               </span>
               <span className="block text-xs text-slate-500">
                 {isZh
-                  ? "勾选后不会新建路由，只会在引用该 Provider 的现有路由中复制对应 Target 并指向新 Provider。"
-                  : "When selected, no routes are created; matching targets in existing routes are duplicated and pointed at the new provider."}
+                  ? "在引用该提供商的现有路由中追加指向新提供商的目标。"
+                  : "Append targets pointing to the new provider in existing routes that reference this provider."}
               </span>
             </span>
           </label>
@@ -2569,10 +2569,10 @@ export default function ProvidersPage() {
         confirmClassName="bg-slate-900 text-white hover:bg-slate-800"
         onConfirm={() => {
           if (!providerToCopy || copyMut.isPending) return;
-          copyMut.mutate({ id: providerToCopy.id, copyRoutes }, {
+          copyMut.mutate({ id: providerToCopy.id, appendTargets }, {
             onSuccess: () => {
               setProviderToCopy(null);
-              setCopyRoutes(false);
+              setAppendTargets(false);
             },
           });
         }}

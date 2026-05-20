@@ -33,7 +33,7 @@ const MODELS_DEV_RUNTIME_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CopyProviderOptions {
     #[serde(default)]
-    pub copy_routes: bool,
+    pub append_targets: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -661,8 +661,8 @@ impl AdminService {
             copied
         };
 
-        if options.copy_routes {
-            self.copy_provider_routes(&original.id, &copied.id).await?;
+        if options.append_targets {
+            self.append_provider_targets(&original.id, &copied.id).await?;
         }
 
         Ok(copied)
@@ -1691,7 +1691,7 @@ impl AdminService {
         unreachable!("unbounded provider copy name search must return");
     }
 
-    async fn copy_provider_routes(
+    async fn append_provider_targets(
         &self,
         original_provider_id: &str,
         copied_provider_id: &str,
@@ -3460,7 +3460,7 @@ mod tests {
 
         let copied = gw
             .admin()
-            .copy_provider_with_options(&original.id, CopyProviderOptions { copy_routes: true })
+            .copy_provider_with_options(&original.id, CopyProviderOptions { append_targets: true })
             .await?;
 
         assert!(!copied.is_enabled);
@@ -3514,7 +3514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_provider_does_not_copy_routes_by_default() -> anyhow::Result<()> {
+    async fn copy_provider_does_not_append_targets_by_default() -> anyhow::Result<()> {
         let gw = build_gateway().await?;
         let original = gw
             .admin()

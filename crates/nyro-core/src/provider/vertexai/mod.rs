@@ -123,7 +123,7 @@ impl Vendor for VertexVendor {
     }
 
     fn vendor_id(&self) -> &'static str {
-        "vertex"
+        "vertexai"
     }
 
     fn supported_protocols(&self) -> &'static [ProtocolId] {
@@ -142,7 +142,7 @@ impl Vendor for VertexVendor {
         let mut outbound = pipeline::build_request(self, req, ctx).await?;
         let token = vertex_access_token(ctx.api_key).await.map_err(|source| {
             GatewayError::provider_unavailable(
-                "vertex",
+                "vertexai",
                 format!("failed to fetch Vertex access token: {source}"),
             )
         })?;
@@ -170,9 +170,9 @@ impl Vendor for VertexVendor {
             .and_then(Value::as_str)
         {
             Some(message) => {
-                GatewayError::upstream_status("vertex", status, Some(message.to_string()))
+                GatewayError::upstream_status("vertexai", status, Some(message.to_string()))
             }
-            None => openai_map_error("vertex", status, body),
+            None => openai_map_error("vertexai", status, body),
         }
     }
 }
@@ -184,7 +184,7 @@ pub fn is_vertex_vendor(provider: &crate::db::models::Provider) -> bool {
         .into_iter()
         .flatten()
         .map(str::trim)
-        .any(|value| value.eq_ignore_ascii_case("vertex"))
+        .any(|value| value.eq_ignore_ascii_case("vertexai"))
 }
 
 pub async fn vertex_access_token(secret_or_token: &str) -> anyhow::Result<String> {
@@ -320,7 +320,7 @@ mod tests {
         let provider = crate::db::models::Provider {
             id: "test".into(),
             name: "test".into(),
-            vendor: Some("vertex".into()),
+            vendor: Some("vertexai".into()),
             protocol: "openai-compat".into(),
             base_url: "https://aiplatform.googleapis.com/v1/projects/demo/locations/global/endpoints/openapi".into(),
             preset_key: None,

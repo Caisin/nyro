@@ -88,7 +88,7 @@ fn resolve_falls_back_to_vendor_when_channel_unknown() {
 #[test]
 fn vertex_vendor_is_registered_with_native_and_openai_channels() {
     let reg = VendorRegistry::global();
-    let meta = reg.metadata("vertex").expect("vertex metadata");
+    let meta = reg.metadata("vertexai").expect("vertex metadata");
     assert_eq!(meta.default_protocol, "google-genai");
     assert!(
         meta.channels
@@ -107,7 +107,7 @@ fn vertex_vendor_is_registered_with_native_and_openai_channels() {
 #[test]
 fn vertex_build_url_rewrites_google_generate_content_to_vertex_resource() {
     let reg = VendorRegistry::global();
-    let mut p = make_provider(Some("vertex"), None);
+    let mut p = make_provider(Some("vertexai"), None);
     p.protocol = "google-genai".into();
     p.base_url = "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global".into();
     p.api_key = r#"{"project_id":"demo-project"}"#.into();
@@ -137,7 +137,7 @@ fn vertex_build_url_rewrites_google_generate_content_to_vertex_resource() {
 #[test]
 fn vertex_build_url_rewrites_openai_compat_path_without_double_version() {
     let reg = VendorRegistry::global();
-    let mut p = make_provider(Some("vertex"), None);
+    let mut p = make_provider(Some("vertexai"), None);
     p.protocol = "openai-compat".into();
     p.base_url = "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/endpoints/openapi".into();
     p.api_key = r#"{"project_id":"demo-project"}"#.into();

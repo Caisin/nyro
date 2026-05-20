@@ -35,7 +35,7 @@ const GOOGLE_CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud
 const PROJECT_PLACEHOLDERS: &[&str] = &["{project}", "{project_id}", "${PROJECT_ID}"];
 
 const METADATA: VendorMetadata = VendorMetadata {
-    id: "vertex",
+    id: "vertexai",
     label: Label {
         zh: "Vertex AI",
         en: "Vertex AI",

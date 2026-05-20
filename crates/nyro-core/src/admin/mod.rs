@@ -662,7 +662,8 @@ impl AdminService {
         };
 
         if options.append_targets {
-            self.append_provider_targets(&original.id, &copied.id).await?;
+            self.append_provider_targets(&original.id, &copied.id)
+                .await?;
         }
 
         Ok(copied)
@@ -3460,7 +3461,12 @@ mod tests {
 
         let copied = gw
             .admin()
-            .copy_provider_with_options(&original.id, CopyProviderOptions { append_targets: true })
+            .copy_provider_with_options(
+                &original.id,
+                CopyProviderOptions {
+                    append_targets: true,
+                },
+            )
             .await?;
 
         assert!(!copied.is_enabled);

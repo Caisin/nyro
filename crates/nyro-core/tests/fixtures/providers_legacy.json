@@ -150,7 +150,7 @@
       "zh": "Vertex AI",
       "en": "Vertex AI"
     },
-    "icon": "google",
+    "icon": "googlecloud",
     "defaultProtocol": "google-genai",
     "channels": [
       {

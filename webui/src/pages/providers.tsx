@@ -202,7 +202,7 @@ function defaultModelsEndpoint(baseUrl: string, protocol: ProviderProtocol) {
 function isVertexProviderSelection(value?: Pick<CreateProvider, "vendor" | "preset_key"> | Pick<UpdateProvider, "vendor" | "preset_key"> | null) {
   const vendor = value?.vendor?.trim().toLowerCase();
   const preset = value?.preset_key?.trim().toLowerCase();
-  return vendor === "vertex" || preset === "vertex";
+  return vendor === "vertexai" || preset === "vertexai";
 }
 
 function defaultVertexBaseUrl(protocol: ProviderProtocol | string) {

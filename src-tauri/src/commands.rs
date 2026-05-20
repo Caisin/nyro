@@ -1,5 +1,5 @@
 use nyro_core::Gateway;
-use nyro_core::admin::ProviderOAuthStatusData;
+use nyro_core::admin::{CopyProviderOptions, ProviderOAuthStatusData};
 use nyro_core::auth::{AuthExchangeInput, AuthSessionInitData, AuthSessionStatusData};
 use nyro_core::db::models::*;
 use serde::{Deserialize, Serialize};
@@ -46,9 +46,13 @@ pub async fn create_provider(
 }
 
 #[tauri::command]
-pub async fn copy_provider(gw: State<'_, Gateway>, id: String) -> Result<Provider, String> {
+pub async fn copy_provider(
+    gw: State<'_, Gateway>,
+    id: String,
+    options: Option<CopyProviderOptions>,
+) -> Result<Provider, String> {
     gw.admin()
-        .copy_provider(&id)
+        .copy_provider_with_options(&id, options.unwrap_or_default())
         .await
         .map_err(|e| e.to_string())
 }

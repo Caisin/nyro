@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Gateway;
@@ -29,6 +29,12 @@ const MODELS_DEV_SNAPSHOT: &str = include_str!("../../assets/models.dev.json");
 const MODELS_DEV_RUNTIME_FILE: &str = "models.dev.json";
 const MODELS_DEV_SOURCE_URL: &str = "https://models.dev/api.json";
 const MODELS_DEV_RUNTIME_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CopyProviderOptions {
+    #[serde(default)]
+    pub copy_routes: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderOAuthStatusData {
@@ -577,6 +583,15 @@ impl AdminService {
     }
 
     pub async fn copy_provider(&self, id: &str) -> anyhow::Result<Provider> {
+        self.copy_provider_with_options(id, CopyProviderOptions::default())
+            .await
+    }
+
+    pub async fn copy_provider_with_options(
+        &self,
+        id: &str,
+        options: CopyProviderOptions,
+    ) -> anyhow::Result<Provider> {
         let original = self.get_provider(id).await?;
         let name = self.next_provider_copy_name(&original.name).await?;
         let copied = self
@@ -593,6 +608,15 @@ impl AdminService {
                 auth_mode: original.auth_mode.clone(),
                 use_proxy: original.use_proxy,
             })
+            .await?;
+        let copied = self
+            .update_provider(
+                &copied.id,
+                UpdateProvider {
+                    is_enabled: Some(false),
+                    ..Default::default()
+                },
+            )
             .await?;
 
         let copied = if original.effective_auth_mode() == "oauth" {
@@ -636,6 +660,10 @@ impl AdminService {
         } else {
             copied
         };
+
+        if options.copy_routes {
+            self.copy_provider_routes(&original.id, &copied.id).await?;
+        }
 
         Ok(copied)
     }
@@ -1663,6 +1691,64 @@ impl AdminService {
         unreachable!("unbounded provider copy name search must return");
     }
 
+    async fn copy_provider_routes(
+        &self,
+        original_provider_id: &str,
+        copied_provider_id: &str,
+    ) -> anyhow::Result<()> {
+        let routes = self.list_routes().await?;
+        for route in routes.into_iter().filter(|route| {
+            route
+                .targets
+                .iter()
+                .any(|target| target.provider_id == original_provider_id)
+        }) {
+            let mut targets = route
+                .targets
+                .iter()
+                .map(|target| CreateRouteTarget {
+                    provider_id: target.provider_id.clone(),
+                    model: target.model.clone(),
+                    weight: Some(target.weight),
+                    priority: Some(target.priority),
+                })
+                .collect::<Vec<_>>();
+
+            let copied_targets = route
+                .targets
+                .iter()
+                .filter(|target| target.provider_id == original_provider_id)
+                .map(|target| CreateRouteTarget {
+                    provider_id: copied_provider_id.to_string(),
+                    model: target.model.clone(),
+                    weight: Some(target.weight),
+                    priority: Some(target.priority),
+                });
+            targets.extend(copied_targets);
+
+            self.update_route(
+                &route.id,
+                UpdateRoute {
+                    targets: Some(
+                        targets
+                            .into_iter()
+                            .map(|target| UpsertRouteTarget {
+                                id: None,
+                                provider_id: target.provider_id,
+                                model: target.model,
+                                weight: target.weight,
+                                priority: target.priority,
+                            })
+                            .collect(),
+                    ),
+                    ..UpdateRoute::default()
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn ensure_route_name_unique(
         &self,
         exclude_id: Option<&str>,
@@ -2029,6 +2115,7 @@ impl AdminService {
                     models_source,
                     api_key: Some(String::new()),
                     auth_mode: Some("oauth".to_string()),
+                    is_enabled: Some(provider.is_enabled),
                     ..Default::default()
                 },
             )
@@ -3279,7 +3366,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_provider_creates_provider_with_copy_suffix() -> anyhow::Result<()> {
+    async fn copy_provider_creates_disabled_provider_with_copy_suffix() -> anyhow::Result<()> {
         let gw = build_gateway().await?;
         let original = gw
             .admin()
@@ -3300,7 +3387,8 @@ mod tests {
         assert_eq!(copied.api_key, original.api_key);
         assert_eq!(copied.auth_mode, original.auth_mode);
         assert_eq!(copied.use_proxy, original.use_proxy);
-        assert_eq!(copied.is_enabled, original.is_enabled);
+        assert!(original.is_enabled);
+        assert!(!copied.is_enabled);
 
         Ok(())
     }
@@ -3317,6 +3405,144 @@ mod tests {
         let second_copy = gw.admin().copy_provider(&original.id).await?;
 
         assert_eq!(second_copy.name, "source-provider_Copy2");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn copy_provider_can_copy_matching_route_targets_to_copied_provider() -> anyhow::Result<()>
+    {
+        let gw = build_gateway().await?;
+        let original = gw
+            .admin()
+            .create_provider(api_key_provider_input("route-source-provider"))
+            .await?;
+        let fallback = gw
+            .admin()
+            .create_provider(api_key_provider_input("route-fallback-provider"))
+            .await?;
+
+        let source_route = gw
+            .admin()
+            .create_route(CreateRoute {
+                name: "source-route".to_string(),
+                virtual_model: "source-model".to_string(),
+                strategy: Some("priority".to_string()),
+                target_provider: String::new(),
+                target_model: String::new(),
+                targets: vec![
+                    CreateRouteTarget {
+                        provider_id: original.id.clone(),
+                        model: "source-upstream-model".to_string(),
+                        weight: Some(80),
+                        priority: Some(1),
+                    },
+                    CreateRouteTarget {
+                        provider_id: fallback.id.clone(),
+                        model: "fallback-upstream-model".to_string(),
+                        weight: Some(20),
+                        priority: Some(2),
+                    },
+                ],
+                access_control: Some(true),
+                cache: Some(RouteCacheConfig {
+                    exact: Some(RouteExactCacheConfig { ttl: Some(60) }),
+                    semantic: Some(RouteSemanticCacheConfig {
+                        ttl: Some(120),
+                        threshold: Some(0.8),
+                    }),
+                }),
+                cache_exact_ttl: None,
+                cache_semantic_ttl: None,
+                cache_semantic_threshold: None,
+            })
+            .await?;
+
+        let copied = gw
+            .admin()
+            .copy_provider_with_options(&original.id, CopyProviderOptions { copy_routes: true })
+            .await?;
+
+        assert!(!copied.is_enabled);
+        let routes = gw.admin().list_routes().await?;
+        assert_eq!(
+            routes.len(),
+            1,
+            "copying route targets must not create new routes"
+        );
+        assert!(routes.iter().all(|route| route.name != "source-route_Copy"));
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.virtual_model != "source-model_Copy")
+        );
+
+        let updated_route = routes
+            .iter()
+            .find(|route| route.id == source_route.id)
+            .expect("source route should remain");
+        assert_eq!(updated_route.name, "source-route");
+        assert_eq!(updated_route.virtual_model, "source-model");
+        assert_eq!(updated_route.strategy, "priority");
+        assert!(updated_route.access_control);
+        assert_eq!(updated_route.cache_exact_ttl, Some(60));
+        assert_eq!(updated_route.cache_semantic_ttl, Some(120));
+        assert_eq!(updated_route.cache_semantic_threshold, Some(0.8));
+        assert_eq!(updated_route.target_provider, original.id);
+        assert_eq!(updated_route.target_model, "source-upstream-model");
+        assert_eq!(updated_route.targets.len(), 3);
+        assert!(updated_route.targets.iter().any(|target| {
+            target.provider_id == original.id
+                && target.model == "source-upstream-model"
+                && target.weight == 80
+                && target.priority == 1
+        }));
+        assert!(updated_route.targets.iter().any(|target| {
+            target.provider_id == copied.id
+                && target.model == "source-upstream-model"
+                && target.weight == 80
+                && target.priority == 1
+        }));
+        assert!(updated_route.targets.iter().any(|target| {
+            target.provider_id == fallback.id
+                && target.model == "fallback-upstream-model"
+                && target.weight == 20
+                && target.priority == 2
+        }));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn copy_provider_does_not_copy_routes_by_default() -> anyhow::Result<()> {
+        let gw = build_gateway().await?;
+        let original = gw
+            .admin()
+            .create_provider(api_key_provider_input("no-route-copy-provider"))
+            .await?;
+
+        gw.admin()
+            .create_route(CreateRoute {
+                name: "no-route-copy-source".to_string(),
+                virtual_model: "no-route-copy-model".to_string(),
+                strategy: None,
+                target_provider: original.id.clone(),
+                target_model: "source-upstream-model".to_string(),
+                targets: vec![],
+                access_control: None,
+                cache: None,
+                cache_exact_ttl: None,
+                cache_semantic_ttl: None,
+                cache_semantic_threshold: None,
+            })
+            .await?;
+
+        gw.admin().copy_provider(&original.id).await?;
+
+        let routes = gw.admin().list_routes().await?;
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].targets.len(), 1);
+        assert_eq!(routes[0].targets[0].provider_id, original.id);
 
         Ok(())
     }

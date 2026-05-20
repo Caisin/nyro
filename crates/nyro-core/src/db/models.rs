@@ -305,7 +305,7 @@ pub struct UpdateProvider {
     pub is_enabled: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateRoute {
     pub name: Option<String>,
     #[serde(alias = "vmodel")]

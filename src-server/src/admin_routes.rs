@@ -5,6 +5,7 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use nyro_core::Gateway;
+use nyro_core::admin::CopyProviderOptions;
 use nyro_core::auth::AuthExchangeInput;
 use nyro_core::db::models::*;
 use serde::Deserialize;
@@ -181,8 +182,10 @@ async fn create_provider_handler(
 async fn copy_provider_handler(
     State(gw): State<Gateway>,
     Path(id): Path<String>,
+    options: Option<Json<CopyProviderOptions>>,
 ) -> impl IntoResponse {
-    match gw.admin().copy_provider(&id).await {
+    let options = options.map(|Json(options)| options).unwrap_or_default();
+    match gw.admin().copy_provider_with_options(&id, options).await {
         Ok(v) => Json(serde_json::json!({ "data": v })).into_response(),
         Err(e) => err(e),
     }

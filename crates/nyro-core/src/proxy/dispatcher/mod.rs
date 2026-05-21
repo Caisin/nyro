@@ -522,10 +522,17 @@ pub async fn dispatch_pipeline(
             }
         };
 
-        // Merge runtime-binding extra headers (runtime binding < adapter, adapter wins).
+        // Merge runtime-binding extra headers and safe client headers.
+        //
+        // Precedence: runtime binding < forwarded client hints < adapter.
+        // Sensitive client headers (auth keys, cookies, IP/host forwarding
+        // metadata, hop-by-hop transport headers) are filtered in
+        // `forwarded_client_headers`, while adapter/provider auth remains
+        // authoritative.
         match runtime_binding_headers(&provider_runtime.binding) {
             Ok(binding_hdrs) => {
                 let mut merged = binding_hdrs;
+                merged.extend(forwarded_client_headers(&headers));
                 merged.extend(outbound.headers);
                 outbound.headers = merged;
             }

@@ -19,13 +19,14 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::cache::entry::CacheEntry;
+use crate::protocol::ids::ProtocolEndpoint;
 use crate::protocol::ir::AiStreamDelta;
 use crate::proxy::client::ProxyClient;
 use crate::proxy::observability::headers_to_json;
 
 use super::{
     CacheWriteCtx, CallCtx, LogBuilder, RequestExtras, StreamResponseAccumulator,
-    compute_embedding, error_response, set_cache_headers,
+    ai_response_to_deltas, compute_embedding, error_response, set_cache_headers,
 };
 
 // ── Streaming response handler ────────────────────────────────────────────────
@@ -113,10 +114,14 @@ pub(super) async fn handle_stream(
 
         tokio::spawn(async move {
             let mut log_buf: Vec<u8> = Vec::new();
+            let mut undecided_buf: Vec<u8> = Vec::new();
             let mut byte_stream = resp.bytes_stream();
             let mut stream_error: Option<String> = None;
             let mut chunks_count: i32 = 0;
             let mut first_chunk_ms: Option<i64> = None;
+            let mut passthrough_mode = PassthroughBodyMode::Undecided;
+            let mut converted_client_sse: Option<String> = None;
+            let mut converted_ai_resp = None;
 
             while let Some(result) = byte_stream.next().await {
                 match result {
@@ -126,8 +131,33 @@ pub(super) async fn handle_stream(
                         }
                         chunks_count += 1;
                         log_buf.extend_from_slice(&b);
-                        if pt_tx.send(Ok(b)).await.is_err() {
-                            break; // client disconnected
+                        match passthrough_mode {
+                            PassthroughBodyMode::Undecided => {
+                                undecided_buf.extend_from_slice(&b);
+                                match classify_passthrough_body(&undecided_buf) {
+                                    Some(PassthroughBodyMode::RawSse) => {
+                                        passthrough_mode = PassthroughBodyMode::RawSse;
+                                        let pending = std::mem::take(&mut undecided_buf);
+                                        if pt_tx.send(Ok(Bytes::from(pending))).await.is_err() {
+                                            break; // client disconnected
+                                        }
+                                    }
+                                    Some(PassthroughBodyMode::NonSseJson) => {
+                                        passthrough_mode = PassthroughBodyMode::NonSseJson;
+                                        undecided_buf.clear();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            PassthroughBodyMode::RawSse => {
+                                if pt_tx.send(Ok(b)).await.is_err() {
+                                    break; // client disconnected
+                                }
+                            }
+                            PassthroughBodyMode::NonSseJson => {
+                                // Upstream returned a complete JSON response to a stream endpoint.
+                                // Buffer until EOF, then convert it to the downstream SSE shape.
+                            }
                         }
                     }
                     Err(e) => {
@@ -148,6 +178,17 @@ pub(super) async fn handle_stream(
             let upstream_latency_ms = upstream_start_pt.elapsed().as_millis() as i64;
             let raw_sse = String::from_utf8_lossy(&log_buf).into_owned();
 
+            if matches!(
+                passthrough_mode,
+                PassthroughBodyMode::NonSseJson | PassthroughBodyMode::Undecided
+            ) && let Some((client_sse, ai_resp)) =
+                format_non_sse_stream_response(&raw_sse, egress, ingress)
+            {
+                let _ = pt_tx.send(Ok(Bytes::from(client_sse.clone()))).await;
+                converted_client_sse = Some(client_sse);
+                converted_ai_resp = Some(ai_resp);
+            }
+
             // Parse accumulated buffer for usage stats (best-effort).
             let mut log_parser = egress.handler().make_stream_response_decoder();
             let mut accumulator = StreamResponseAccumulator::default();
@@ -158,7 +199,7 @@ pub(super) async fn handle_stream(
                 accumulator.apply_all(&ai_deltas);
             }
 
-            let mut ai_resp = accumulator.into_ai_response();
+            let mut ai_resp = converted_ai_resp.unwrap_or_else(|| accumulator.into_ai_response());
             if ai_resp.id.is_empty() {
                 ai_resp.id = format!("msg_{}", uuid::Uuid::new_v4().simple());
             }
@@ -178,7 +219,7 @@ pub(super) async fn handle_stream(
                     Some(raw_sse.clone()),
                     Some(upstream_latency_ms),
                 )
-                .with_client_response(None, Some(raw_sse))
+                .with_client_response(None, Some(converted_client_sse.unwrap_or(raw_sse)))
                 .stream_metrics(chunks_count, first_chunk_ms)
                 .emit();
 
@@ -406,4 +447,101 @@ pub(super) async fn handle_stream(
         .unwrap();
     set_cache_headers(&mut response, "MISS", cache_key, None, expose_headers);
     response
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassthroughBodyMode {
+    Undecided,
+    RawSse,
+    NonSseJson,
+}
+
+fn classify_passthrough_body(bytes: &[u8]) -> Option<PassthroughBodyMode> {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("data:")
+        || trimmed.starts_with("event:")
+        || trimmed.starts_with("id:")
+        || trimmed.starts_with("retry:")
+        || trimmed.starts_with(':')
+    {
+        return Some(PassthroughBodyMode::RawSse);
+    }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return Some(PassthroughBodyMode::NonSseJson);
+    }
+    Some(PassthroughBodyMode::RawSse)
+}
+
+fn format_non_sse_stream_response(
+    raw: &str,
+    egress: ProtocolEndpoint,
+    ingress: ProtocolEndpoint,
+) -> Option<(String, crate::protocol::ir::AiResponse)> {
+    let value = serde_json::from_str::<Value>(raw).ok()?;
+    let ai_resp = egress
+        .handler()
+        .make_response_decoder()
+        .parse_response(value)
+        .ok()?;
+    let deltas = ai_response_to_deltas(&ai_resp);
+    let mut stream_formatter = ingress.handler().make_stream_response_encoder();
+    let mut client_sse_parts = Vec::new();
+
+    for ev in stream_formatter.format_deltas(&deltas) {
+        client_sse_parts.push(ev.to_sse_string());
+    }
+    for ev in stream_formatter.format_done() {
+        client_sse_parts.push(ev.to_sse_string());
+    }
+
+    Some((client_sse_parts.join(""), ai_resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::ids::GOOGLE_GEMINI_GENERATE_CONTENT_V1BETA;
+
+    #[test]
+    fn non_sse_gemini_stream_response_is_formatted_as_sse() {
+        let raw = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "hello"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP",
+                "index": 0
+            }],
+            "modelVersion": "gemini-3.5-flash",
+            "responseId": "resp-json-stream",
+            "usageMetadata": {
+                "candidatesTokenCount": 3,
+                "promptTokenCount": 5,
+                "totalTokenCount": 8
+            }
+        })
+        .to_string();
+
+        let (sse, ai_resp) = format_non_sse_stream_response(
+            &raw,
+            GOOGLE_GEMINI_GENERATE_CONTENT_V1BETA,
+            GOOGLE_GEMINI_GENERATE_CONTENT_V1BETA,
+        )
+        .expect("complete JSON stream response should format as SSE");
+
+        assert!(sse.starts_with("data: "), "SSE must use data frames: {sse}");
+        assert!(
+            sse.contains("\"usageMetadata\""),
+            "terminal SSE must include Gemini usage metadata: {sse}"
+        );
+        assert_eq!(ai_resp.content, "hello");
+        assert_eq!(ai_resp.usage.prompt_tokens, 5);
+        assert_eq!(ai_resp.usage.completion_tokens, 3);
+        assert_eq!(ai_resp.usage.total_tokens, 8);
+    }
 }

@@ -166,13 +166,19 @@ impl StreamResponseDecoder for GoogleStreamParser {
             let block = self.buffer[..pos].to_string();
             self.buffer = self.buffer[pos + 2..].to_string();
 
+            let mut saw_sse_data = false;
             for line in block.lines() {
                 if let Some(data) = line.strip_prefix("data: ") {
+                    saw_sse_data = true;
                     let data = data.trim();
                     if let Ok(chunk) = serde_json::from_str::<Value>(data) {
                         parse_gemini_chunk(&chunk, &mut deltas, &mut self.first);
                     }
                 }
+            }
+
+            if !saw_sse_data && let Ok(chunk) = serde_json::from_str::<Value>(block.trim()) {
+                parse_gemini_chunk(&chunk, &mut deltas, &mut self.first);
             }
         }
 
@@ -694,7 +700,8 @@ fn extract_gemini_usage(v: &Value) -> Usage {
         ],
     )
     .unwrap_or(0);
-    let output = first_u64(
+    let total = first_u64(u, &["totalTokenCount", "total_tokens"]);
+    let candidate_output = first_u64(
         u,
         &[
             "candidatesTokenCount",
@@ -702,12 +709,21 @@ fn extract_gemini_usage(v: &Value) -> Usage {
             "outputTokenCount",
             "output_tokens",
         ],
+    );
+    let thoughts = first_u64(
+        u,
+        &["thoughtsTokenCount", "reasoning_tokens", "thought_tokens"],
     )
     .unwrap_or(0);
+    let output = total
+        .and_then(|total| total.checked_sub(input))
+        .or_else(|| candidate_output.map(|output| output.saturating_add(thoughts)))
+        .unwrap_or(0);
 
     Usage {
         prompt_tokens: input as u32,
         completion_tokens: output as u32,
+        total_tokens: total.unwrap_or(input.saturating_add(output)) as u32,
         ..Usage::default()
     }
 }
@@ -976,5 +992,60 @@ mod tests {
             "IMAGE"
         );
         assert_eq!(usage_event["responseId"], "stream-future");
+    }
+
+    #[test]
+    fn stream_parser_extracts_usage_from_non_sse_generate_content_response() {
+        let raw = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": "{\n \"\n}",
+                        "thoughtSignature": "EtpxCtdxAQtnKrzuYidcoegpuXXkuA=="
+                    }],
+                    "role": "model"
+                },
+                "finishReason": "STOP",
+                "index": 0
+            }],
+            "modelVersion": "gemini-3.5-flash",
+            "responseId": "Q90OarbFKsXM-sAPuOH-8AE",
+            "usageMetadata": {
+                "candidatesTokenCount": 1408,
+                "promptTokenCount": 10996,
+                "promptTokensDetails": [{
+                    "modality": "TEXT",
+                    "tokenCount": 10996
+                }],
+                "serviceTier": "standard",
+                "thoughtsTokenCount": 4649,
+                "totalTokenCount": 17053
+            }
+        })
+        .to_string();
+
+        let mut parser = GoogleStreamParser::new();
+        let initial = parser.parse_chunk(&raw).unwrap();
+        assert!(
+            initial.is_empty(),
+            "bare JSON should be completed by finish"
+        );
+
+        let deltas = parser.finish().unwrap();
+        let usage = deltas
+            .iter()
+            .find_map(|delta| match delta {
+                AiStreamDelta::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("non-SSE streamGenerateContent response should emit usage");
+
+        assert_eq!(usage.prompt_tokens, 10996);
+        assert_eq!(usage.completion_tokens, 6057);
+        assert_eq!(usage.total_tokens, 17053);
+        assert!(deltas.iter().any(|delta| matches!(
+            delta,
+            AiStreamDelta::Done { stop_reason } if stop_reason == "stop"
+        )));
     }
 }

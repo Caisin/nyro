@@ -68,6 +68,12 @@ fn build_proxy_cors_layer(origins: &[String], proxy_port: u16) -> CorsLayer {
             header::ACCEPT,
             header::HeaderName::from_static("x-api-key"),
             header::HeaderName::from_static("anthropic-version"),
+            header::HeaderName::from_static("anthropic-beta"),
+            header::HeaderName::from_static("openai-beta"),
+            header::HeaderName::from_static("openai-organization"),
+            header::HeaderName::from_static("openai-project"),
+            header::HeaderName::from_static("idempotency-key"),
+            header::HeaderName::from_static("x-request-id"),
         ])
 }
 

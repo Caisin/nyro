@@ -51,7 +51,9 @@ pub(super) async fn handle_stream(
     let semantic_write_ctx = cache_ctx.semantic.clone();
     let expose_headers = cache_ctx.expose_headers;
     // Shared log builder: identity + request-side extras pre-filled.
-    let log = LogBuilder::from_ctx(call_ctx).with_req_extras(req_extras);
+    let log = LogBuilder::from_ctx(call_ctx)
+        .with_req_extras(req_extras)
+        .upstream_url(url);
 
     let upstream_start = std::time::Instant::now();
     let call_result = match client.call_stream(url, headers.clone(), body.clone()).await {

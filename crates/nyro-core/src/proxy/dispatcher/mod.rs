@@ -91,7 +91,8 @@ pub async fn dispatch_pipeline(
         .body
         .as_ref()
         .and_then(|b| serde_json::to_string(b).ok());
-    let request_headers_str = serde_json::to_string(&envelope.headers).ok();
+    let request_headers_str =
+        crate::proxy::observability::header_map_to_redacted_json(&envelope.headers);
     // Built early so it can be used by both pre-loop log entries and the per-target handlers.
     let req_extras = RequestExtras {
         method: method_owned.clone(),
@@ -871,6 +872,11 @@ impl LogBuilder {
         self
     }
 
+    fn upstream_url(mut self, url: &str) -> Self {
+        self.extras.upstream_url = Some(crate::proxy::observability::redact_url_credentials(url));
+        self
+    }
+
     /// Set the upstream response wire.
     fn with_upstream_response(
         mut self,
@@ -1441,11 +1447,63 @@ fn resolve_openai_base_url(provider: &Provider) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::ai_response_to_deltas;
+    use super::dispatch_pipeline;
+    use crate::Gateway;
     use crate::protocol::StreamResponseEncoder;
     use crate::protocol::codec::google::gemini::stream::GoogleStreamFormatter;
+    use crate::protocol::ids::OPENAI_COMPATIBLE_CHAT_COMPLETIONS_V1;
     use crate::protocol::ir::response::ResponseItem;
+    use crate::protocol::ir::{AiRequest, RawEnvelope};
     use crate::protocol::ir::{AiResponse, Usage};
+    use axum::http::{HeaderMap, StatusCode};
     use serde_json::Value;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn dispatch_logs_client_request_headers_redacted_when_route_missing() {
+        let mut config = crate::config::GatewayConfig::default();
+        config.data_dir = std::env::temp_dir().join(format!(
+            "nyro-client-header-redaction-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (gw, mut log_rx) = Gateway::new(config).await.expect("gateway init");
+        let mut envelope_headers = HashMap::new();
+        envelope_headers.insert("authorization".into(), "Bearer client-secret".into());
+        envelope_headers.insert("x-api-key".into(), "client-key".into());
+        envelope_headers.insert("content-type".into(), "application/json".into());
+        let envelope = RawEnvelope::new(
+            Some(serde_json::json!({"model": "missing-model"})),
+            envelope_headers,
+            "POST",
+            "/v1/chat/completions",
+        );
+        let request = AiRequest::new("missing-model", Vec::new());
+
+        let response = dispatch_pipeline(
+            gw,
+            HeaderMap::new(),
+            envelope,
+            request,
+            OPENAI_COMPATIBLE_CHAT_COMPLETIONS_V1,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let entry = tokio::time::timeout(std::time::Duration::from_secs(1), log_rx.recv())
+            .await
+            .expect("log entry should be emitted")
+            .expect("log channel should remain open");
+        let headers = entry
+            .client_request_headers
+            .as_deref()
+            .expect("client headers should be logged");
+        let parsed: Value = serde_json::from_str(headers).expect("headers should be JSON");
+        assert_eq!(parsed["authorization"], "***");
+        assert_eq!(parsed["x-api-key"], "***");
+        assert_eq!(parsed["content-type"], "application/json");
+        assert!(!headers.contains("client-secret"));
+        assert!(!headers.contains("client-key"));
+    }
 
     #[test]
     fn cached_non_stream_gemini_response_replays_inline_data_as_stream() {

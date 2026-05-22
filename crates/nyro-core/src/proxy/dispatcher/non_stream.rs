@@ -15,7 +15,7 @@ use crate::cache::entry::CacheEntry;
 use crate::integrations::{HookContext, HookRegistry};
 use crate::provider::inbound::InboundResponse;
 use crate::provider::vendor::ProviderCtx;
-use crate::proxy::client::ProxyClient;
+use crate::proxy::client::{ProxyClient, UpstreamResponseDecodeError};
 use crate::proxy::observability::headers_to_json;
 
 use super::{
@@ -52,6 +52,8 @@ pub(super) async fn handle_non_stream(
     let expose_headers = cache_ctx.expose_headers;
     // Shared log builder pre-filled with identity + request-side extras.
     let log = LogBuilder::from_ctx(call_ctx).with_req_extras(req_extras);
+    let upstream_req_hdrs_str = crate::proxy::observability::reqwest_headers_to_json(&headers);
+    let upstream_req_body_str = serde_json::to_string(&body).ok();
 
     let upstream_start = std::time::Instant::now();
     let call_result = match client
@@ -60,12 +62,33 @@ pub(super) async fn handle_non_stream(
     {
         Ok(r) => r,
         Err(e) => {
-            log.status(502)
-                .resp_body(Some(
-                    serde_json::json!({ "error": { "message": format!("upstream error: {e}") } })
-                        .to_string(),
-                ))
-                .emit();
+            let upstream_latency_ms = upstream_start.elapsed().as_millis() as i64;
+            let log = log
+                .upstream_url(url)
+                .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str);
+            if let Some(decode) = e.downcast_ref::<UpstreamResponseDecodeError>() {
+                let upstream_hdrs_str = headers_to_json(&decode.headers);
+                let upstream_body_str = Some(decode.body_text());
+                log.status(502)
+                    .with_upstream_response(
+                        decode.status as i32,
+                        upstream_hdrs_str,
+                        upstream_body_str,
+                        Some(upstream_latency_ms),
+                    )
+                    .resp_body(Some(
+                        serde_json::json!({ "error": { "message": format!("upstream error: {e}") } })
+                            .to_string(),
+                    ))
+                    .emit();
+            } else {
+                log.status(502)
+                    .resp_body(Some(
+                        serde_json::json!({ "error": { "message": format!("upstream error: {e}") } })
+                            .to_string(),
+                    ))
+                    .emit();
+            }
             return error_response(502, &format!("upstream error: {e}"));
         }
     };
@@ -73,12 +96,11 @@ pub(super) async fn handle_non_stream(
 
     let (resp, status, upstream_headers) = call_result;
     let upstream_hdrs_str = headers_to_json(&upstream_headers);
-    let upstream_req_hdrs_str = crate::proxy::observability::reqwest_headers_to_json(&headers);
-    let upstream_req_body_str = serde_json::to_string(&body).ok();
 
     if status >= 400 {
         let body_str = serde_json::to_string(&resp).ok();
         log.status(status)
+            .upstream_url(url)
             .upstream_status(status as i32)
             .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
             .with_upstream_response(
@@ -101,6 +123,7 @@ pub(super) async fn handle_non_stream(
         let usage = crate::protocol::codec::openai::compatible::embeddings::parse_usage(&resp);
         let resp_str = serde_json::to_string(&resp).ok();
         log.status(status)
+            .upstream_url(url)
             .usage(usage)
             .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
             .with_upstream_response(
@@ -128,6 +151,7 @@ pub(super) async fn handle_non_stream(
         );
         let resp_str = serde_json::to_string(&resp).ok();
         log.status(status)
+            .upstream_url(url)
             .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
             .with_upstream_response(
                 status as i32,
@@ -151,16 +175,18 @@ pub(super) async fn handle_non_stream(
         Ok(r) => r,
         Err(e) => {
             log.status(500)
+                .upstream_url(url)
                 .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
                 .with_upstream_response(
                     status as i32,
                     upstream_hdrs_str.clone(),
-                    Some(
-                        serde_json::json!({ "error": { "message": format!("parse error: {e}") } })
-                            .to_string(),
-                    ),
+                    upstream_resp_str,
                     Some(upstream_latency_ms),
                 )
+                .resp_body(Some(
+                    serde_json::json!({ "error": { "message": format!("parse error: {e}") } })
+                        .to_string(),
+                ))
                 .emit();
             return error_response(500, &format!("parse error: {e}"));
         }
@@ -193,6 +219,7 @@ pub(super) async fn handle_non_stream(
 
     let response_body_full = serde_json::to_string(&output).ok();
     log.status(status)
+        .upstream_url(url)
         .usage(usage.clone())
         .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
         .with_upstream_response(
@@ -248,6 +275,215 @@ pub(super) async fn handle_non_stream(
     response
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use reqwest::header::HeaderValue;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use crate::Gateway;
+    use crate::config::GatewayConfig;
+    use crate::db::models::Provider;
+    use crate::error::GatewayError;
+    use crate::protocol::ids::{
+        GOOGLE_GEMINI_GENERATE_CONTENT_V1BETA, OPENAI_COMPATIBLE_CHAT_COMPLETIONS_V1,
+    };
+    use crate::protocol::ir::{AiRequest, AiResponse};
+    use crate::provider::outbound::OutboundRequest;
+    use crate::provider::registry::VendorScope;
+    use crate::provider::vendor::Vendor;
+    use crate::provider::vendor_ext::VendorCtx;
+
+    struct NoopVendor;
+
+    #[async_trait]
+    impl Vendor for NoopVendor {
+        fn scope(&self) -> VendorScope {
+            VendorScope::Vendor { vendor_id: "noop" }
+        }
+
+        fn vendor_id(&self) -> &'static str {
+            "noop"
+        }
+
+        fn supported_protocols(&self) -> &'static [crate::protocol::ids::ProtocolId] {
+            &[GOOGLE_GEMINI_GENERATE_CONTENT_V1BETA]
+        }
+
+        async fn build_request(
+            &self,
+            _req: &mut AiRequest,
+            _ctx: &ProviderCtx<'_>,
+        ) -> Result<OutboundRequest, GatewayError> {
+            unreachable!("test calls handle_non_stream after outbound is built")
+        }
+
+        async fn parse_response(
+            &self,
+            _resp: InboundResponse,
+            _ctx: &ProviderCtx<'_>,
+        ) -> Result<AiResponse, GatewayError> {
+            unreachable!("decode error happens before provider response parsing")
+        }
+
+        fn map_error(&self, status: u16, _body: Value) -> GatewayError {
+            GatewayError::upstream_status("noop", status, None)
+        }
+
+        fn auth_headers(&self, _ctx: &VendorCtx<'_>) -> ReqwestHeaderMap {
+            ReqwestHeaderMap::new()
+        }
+    }
+
+    fn fake_provider(base_url: String) -> Provider {
+        Provider {
+            id: "provider-google".into(),
+            name: "Google".into(),
+            vendor: Some("google".into()),
+            protocol: "google-gemini".into(),
+            base_url,
+            preset_key: None,
+            channel: Some("default".into()),
+            models_source: None,
+            static_models: None,
+            api_key: "secret".into(),
+            auth_mode: "apikey".into(),
+            use_proxy: false,
+            last_test_success: None,
+            last_test_at: None,
+            is_enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    async fn serve_invalid_json_once() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut buf = [0_u8; 2048];
+            let _ = socket.read(&mut buf).await.expect("read request");
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nx-request-id: upstream-123\r\ncontent-length: 16\r\n\r\nnot valid json!!",
+                )
+                .await
+                .expect("write response");
+        });
+        format!("http://{addr}/v1beta/models/gemini:generateContent?key=secret")
+    }
+
+    #[tokio::test]
+    async fn logs_upstream_wire_data_when_non_stream_response_json_decode_fails() {
+        let url = serve_invalid_json_once().await;
+        let base_url = url.split("/v1beta").next().unwrap().to_string();
+        let provider = fake_provider(base_url);
+        let mut config = GatewayConfig::default();
+        config.data_dir =
+            std::env::temp_dir().join(format!("nyro-decode-log-test-{}", uuid::Uuid::new_v4()));
+        let (gw, mut log_rx) = Gateway::new(config).await.expect("gateway init");
+
+        let call_ctx = CallCtx {
+            gw: gw.clone(),
+            provider: &provider,
+            route_id: "route-google",
+            route_name: "Google route",
+            egress: GOOGLE_GEMINI_GENERATE_CONTENT_V1BETA,
+            ingress: OPENAI_COMPATIBLE_CHAT_COMPLETIONS_V1,
+            ingress_str: "openai/chat/v1",
+            egress_str: "google/gemini/generateContent/v1beta",
+            request_model: "virtual-gemini",
+            actual_model: "gemini-2.5-flash",
+            api_key_id: None,
+            api_key_name: None,
+            is_stream: false,
+            start: std::time::Instant::now(),
+        };
+        let cache_ctx = CacheWriteCtx {
+            cache_key: None,
+            allow_exact_store: false,
+            exact_cache_ttl: None,
+            semantic: None,
+            expose_headers: false,
+        };
+        let req_extras = RequestExtras {
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            headers: None,
+            body: Some(r#"{"model":"virtual-gemini"}"#.into()),
+        };
+        let provider_ctx = ProviderCtx {
+            provider: &provider,
+            protocol: GOOGLE_GEMINI_GENERATE_CONTENT_V1BETA,
+            egress_base_url: &provider.base_url,
+            api_key: "secret",
+            actual_model: "gemini-2.5-flash",
+            credential: None,
+            gw: &gw,
+            disable_default_auth: false,
+        };
+        let mut headers = ReqwestHeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+
+        let response = handle_non_stream(
+            ProxyClient::new(reqwest::Client::new()),
+            &url,
+            headers,
+            serde_json::json!({"model": "gemini-2.5-flash"}),
+            &call_ctx,
+            &cache_ctx,
+            &req_extras,
+            &NoopVendor,
+            &provider_ctx,
+            false,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let entry = tokio::time::timeout(std::time::Duration::from_secs(1), log_rx.recv())
+            .await
+            .expect("log entry should be emitted")
+            .expect("log channel should remain open");
+
+        assert_eq!(entry.upstream_status_code, Some(200));
+        assert_eq!(
+            entry.upstream_response_body.as_deref(),
+            Some("not valid json!!")
+        );
+        assert!(
+            entry
+                .upstream_response_headers
+                .as_deref()
+                .is_some_and(|h| h.contains("upstream-123"))
+        );
+        assert!(
+            entry
+                .upstream_request_body
+                .as_deref()
+                .is_some_and(|b| b.contains("gemini-2.5-flash"))
+        );
+        assert!(
+            entry
+                .upstream_url
+                .as_deref()
+                .is_some_and(|u| u.contains("generateContent") && u.contains("key=***"))
+        );
+        assert!(
+            entry
+                .client_response_body
+                .as_deref()
+                .is_some_and(|b| b.contains("error decoding response body"))
+        );
+    }
+}
+
 // ── Force-stream non-stream handler ──────────────────────────────────────────
 
 /// Consume a streaming upstream response and return a non-streaming client
@@ -271,13 +507,18 @@ pub(super) async fn handle_non_stream_via_upstream_stream(
     let exact_cache_ttl = cache_ctx.exact_cache_ttl;
     let semantic_write_ctx = cache_ctx.semantic.clone();
     let expose_headers = cache_ctx.expose_headers;
-    let log = LogBuilder::from_ctx(call_ctx);
+    let log = LogBuilder::from_ctx(call_ctx).upstream_url(url);
 
     let upstream_start = std::time::Instant::now();
     let call_result = match client.call_stream(url, headers.clone(), body.clone()).await {
         Ok(r) => r,
         Err(e) => {
-            log.status(502).emit();
+            log.status(502)
+                .resp_body(Some(
+                    serde_json::json!({ "error": { "message": format!("upstream error: {e}") } })
+                        .to_string(),
+                ))
+                .emit();
             return error_response(502, &format!("upstream error: {e}"));
         }
     };
@@ -295,6 +536,7 @@ pub(super) async fn handle_non_stream_via_upstream_stream(
             .unwrap_or_else(|_| serde_json::json!({"error": {"message": "upstream error"}}));
         let err_body_str = serde_json::to_string(&err_body).ok();
         log.status(status)
+            .upstream_url(url)
             .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
             .with_upstream_response(
                 status as i32,
@@ -321,6 +563,12 @@ pub(super) async fn handle_non_stream_via_upstream_stream(
             Err(e) => {
                 log.status(502)
                     .error(format!("stream read error: {e}"))
+                    .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
+                    .upstream_resp_headers(upstream_hdrs_str)
+                    .resp_body(Some(
+                        serde_json::json!({ "error": { "message": format!("upstream stream error: {e}") } })
+                            .to_string(),
+                    ))
                     .emit();
                 return error_response(502, &format!("upstream stream error: {e}"));
             }
@@ -353,9 +601,15 @@ pub(super) async fn handle_non_stream_via_upstream_stream(
 
     let client_resp_body_str = serde_json::to_string(&output).ok();
     log.status(status)
+        .upstream_url(url)
         .usage(usage.clone())
         .with_upstream_request(upstream_req_hdrs_str, upstream_req_body_str)
-        .upstream_resp_headers(upstream_hdrs_str)
+        .with_upstream_response(
+            status as i32,
+            upstream_hdrs_str,
+            None,
+            Some(upstream_latency_ms),
+        )
         .with_client_response(None, client_resp_body_str)
         .emit();
 
